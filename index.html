@@ -4,47 +4,104 @@
     <meta charset="utf-8">
     <link rel="stylesheet" type="text/css" href="https://cdn.mxpnl.com/libs/mixpanel-platform/css/reset.css">
     <link rel="stylesheet" type="text/css" href="https://cdn.mxpnl.com/libs/mixpanel-platform/build/mixpanel-platform.v0.latest.min.css">
+    <link rel="stylesheet" type="text/css" href="https://cdn.rawgit.com/mp-christine/mp-christine/master/platform/assets/survey/survey_export.css">
+
+    <link rel="stylesheet" type="text/css" href="https://cdn.rawgit.com/mixpanel-platform/mixpanel-unicorn-1-855433-K9huT8m/master/styles.css">
+    <script src="https://cdn.rawgit.com/mp-christine/mp-christine/master/platform/assets/json2csv.js"></script>
     <script src="https://cdn.mxpnl.com/libs/mixpanel-platform/build/mixpanel-platform.v0.latest.min.js"></script>
   </head>
   <body class="mixpanel-platform-body">
     <div class="mixpanel-platform-section">
-      <div id="eventSelect" style="float: left;"></div>
-      <div id="by" class="mixpanel-platform-label" style="margin-left: 10px; display: none;">by</div>
       <div id="propSelect" style="float: left;"></div>
-      <div id="dateSelect" style="float: right;"></div>
+      <button disabled="true" style="float: right;" class="button button_primary" id="csv_export">Please Wait...</button>
       <div style="clear: both;"></div>
-      <div id="graph"></div>
     </div>
     <div id="table"></div>
     <script>
-      var eventSelect = $('#eventSelect').MPEventSelect();
-      var propSelect  = $('#propSelect').MPPropertySelect();
-      var dateSelect  = $('#dateSelect').MPDatepicker();
-      var eventGraph  = $('#graph').MPChart({chartType: 'line'});
+      var json_to_csv = new json2csv();
+      var propSelect;
+      var last_response = undefined;
       var eventTable  = $('#table').MPTable({
-        showPercentages: true,
-        firstColHeader: 'Event'
+        showPercentages: false,
+      });
+      var options = {items: []};
+      
+      $("body").delegate( "#csv_export", "click", function() {
+          var csv = "data:text/csv;charset=utf-8," + json_to_csv.jsonToCSV(json_object);
+          window.open(encodeURI(csv));
       });
 
-      var runQuery = function() {
-        var eventName = eventSelect.MPEventSelect('value'),
-            propName  = propSelect.MPPropertySelect('value'),
-            dateRange = dateSelect.MPDatepicker('value');
+      
+       MP.api.query('/api/2.0/engage/properties/').done(function(json) {
+        _.each(json.results, function(v,k) {
+          options.items.push({label: k, value: k});
+        })
+        propSelect = $('#propSelect').MPSelect(options);
+        propSelect.on('change', function(e, propName) {
+          runQuery(propName);
+        });
+      });
 
-        if (eventName) {
-          MP.api.segment(eventName, propName, dateRange).done(function(results) {
-            eventGraph.MPChart('setData', results);
-            eventTable.MPTable('setData', results);
+      var runQuery = function(propName) {
+       var queryParams = {
+            matchKey: propName
+          };
+          var script = $('#cq').html();
+          script = $.trim(script);
+          MP.api.custom_query(script, queryParams)
+          .done(function(resp) {
+            last_response = resp;
+            eventTable.MPTable('setData', resp);
+            $('#csv_export').html("Export to CSV").prop("disabled",false);
+          }).fail(function($xhr) {
+              var error = $xhr.request.responseText;
+              var error_text = "Requst failed";
+              try {
+                  error_text = JSON.parse(error).error;
+              } catch (err) {
+                  error_text = $xhr.request.responseText;
+              }
+          });
+      };
+    </script>
+    <script type="text/cq" id="cq">
+        function main() {
+          var matchKey = params.matchKey;
+          return People()
+          .filter(function(user){
+            return user.properties[matchKey] || 
+            user.distinct_id == user.properties[matchKey] ||
+            user.distinct_id == encodeURIComponent(user.properties[matchKey]);
+          })
+          .map(function(user) {
+            return {
+              distinct_id : user.distinct_id,
+              match_key : user.properties[matchKey] ? 
+              user.properties[matchKey] : ((user.distinct_id == user.properties[matchKey] ||
+                user.distinct_id == encodeURIComponent(user.properties[matchKey])) ? user.distinct_id : "")
+            };
+          })
+          .groupBy(["match_key"], function(state, users) {
+            state = {holder:state, profiles: []}
+            _.each(state.holder, function(v) {
+                state.profiles.push(v.holder[0]);
+            });
+            _.each(users, function(v) {
+              state.holder.push(v.distinct_id);
+            });
+            return state;
+          })
+          .filter(function(user){
+            return user.value.profiles && user.value.profiles.length >= 2;
+          })
+          .map(function(user) {
+            var duplicates = {match_key: user.key[0]};
+            _.each(user.value.profiles, function(v,k) {
+              duplicates["profile_" + k] = v;
+            });
+            return duplicates;
           });
         }
-      };
-      eventSelect.on('change', function(e, eventName) {
-        propSelect.MPPropertySelect('setEvent', eventName);
-        $("#by").show();
-        runQuery();
-      });
-      propSelect.on('change', runQuery);
-      dateSelect.on('change', runQuery);
     </script>
   </body>
 </html>
